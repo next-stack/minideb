@@ -1,20 +1,13 @@
 inputs:
   dist:
     description: 'Dist to build'
-    default: 'buster'
+    default: 'bookworm'
   platform:
     description: 'Platform to build'
     default: 'amd64'
   is_latest:
     description: The created dist is also latest
     default: false
-  build_snapshot:
-    description: Build snapshot build
-    default: false
-outputs:
-  snapshot-id:
-    description: "Created snapshot id if requested to build it"
-    value: ${{ steps.snapshot-id.outputs.snapshot-id }}
 runs:
   using: "composite"
   steps:
@@ -26,56 +19,14 @@ runs:
       shell: bash
     - run: sudo make .installed-requirements
       shell: bash
-    - name: Install gcloud
-      run: |
-        if ! command -v gcloud &> /dev/null
-          then
-            echo "Installing gcloud"
-            echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
-            curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-
-            apt-get update
-            apt-get install -y google-cloud-sdk
-        else
-            echo "gcloud is installed"
-        fi
-      shell: bash
     - name: "Install QEMU"
       run: |
         set -x
-        if [[ "${{ inputs.platform }}" == "arm64" ]]; then
+        if [[ "${{ inputs.platform }}" != "$(dpkg --print-architecture)" ]]; then
           echo "Installing QEMU"
-          # qemu-user-static fails with segfaults building bullseye
-          # We will revisit this when 20.10 is allowed as build slave on GitHub Actions
-          # https://bugs.launchpad.net/qemu/+bug/1749393
-          # https://bugs.launchpad.net/ubuntu/+source/qemu/+bug/1928075
-          if [[ "${{ inputs.dist }}" == "bullseye" ]]; then
-            sudo tee /etc/apt/preferences.d/qemu <<EOF
-        Package: *
-        Pin: release n=focal
-        Pin-Priority: 900
-        Package: *
-        Pin: release n=hirsute
-        Pin-Priority: 400
-        EOF
-            sudo tee /etc/apt/sources.list.d/hirsute.list <<EOF
-        deb http://archive.ubuntu.com/ubuntu hirsute universe
-        deb http://archive.ubuntu.com/ubuntu hirsute-updates universe
-        deb http://security.ubuntu.com/ubuntu hirsute-security universe
-        EOF
-            sudo apt-get update -qq && sudo apt-get install -y -t hirsute qemu-user-static
-          else
-            sudo apt-get update -qq && sudo apt-get install -y qemu-user-static
-          fi
+          sudo apt-get update -qq && sudo apt-get install -y qemu-user-static
         else
-            echo "QEMU is not required for platform ${{ inputs.platform }}"
-        fi
-      shell: bash
-    - name: Build snapshot id
-      id: snapshot-id
-      run: |
-        if ${{ inputs.build_snapshot }} ; then
-           echo "::set-output name=snapshot-id::$(./snapshot_id)"
+          echo "QEMU is not required for platform ${{ inputs.platform }}"
         fi
       shell: bash
     - name: "Build image"
@@ -83,9 +34,6 @@ runs:
         set -x
         echo Building  ${{ inputs.dist }} - ${{ inputs.platform }}
         sudo -E bash -x buildone "${{ inputs.dist }}" "${{ inputs.platform }}"
-        if ${{ inputs.build_snapshot }} ; then
-             sudo -E bash -x buildone_snapshot "${{ inputs.dist }}" "${{ steps.snapshot-id.outputs.snapshot-id }}" "${{ inputs.platform }}"
-        fi
         if ${{ inputs.is_latest }} ; then
           BASENAME=${BASENAME:?Undefined or empty BASENAME}
           echo "Tagging latest"

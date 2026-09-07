@@ -8,36 +8,21 @@ DIST=${1:?Specify the distrubution name}
 PLATFORM=${2:-amd64}
 
 BASENAME=bitnami/minideb
-GCR_BASENAME=gcr.io/bitnami-containers/minideb
+DOCKER_REGISTRY=${DOCKER_REGISTRY:-"docker.io"}
 
 if [ -n "${DOCKER_PASSWORD:-}" ]; then
-    echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-fi
-
-if [ -n "${GCR_KEY:-}" ]; then
-    gcloud auth activate-service-account "$GCR_EMAIL" --key-file <(echo "$GCR_KEY")
-    gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin gcr.io
-elif [ -n "${GCR_TOKEN:-}" ]; then
-    echo "${GCR_TOKEN:-}" | docker login -u oauth2accesstoken --password-stdin gcr.io
-fi
-
-ENABLE_DOCKER_CONTENT_TRUST=0
-if [ -n "${DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE:-}" ] && [ -n "${DOCKER_CONTENT_TRUST_REPOSITORY_KEY:-}" ]; then
-    tmpdir=$(mktemp -d)
-    (cd "${tmpdir}" && bash -c 'echo -n "${DOCKER_CONTENT_TRUST_REPOSITORY_KEY}" | base64 -d > key')
-    chmod 400 "${tmpdir}/key"
-    docker trust key load "${tmpdir}/key"
-    rm -rf "${tmpdir}"
-    export ENABLE_DOCKER_CONTENT_TRUST=1
+    echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin "${DOCKER_REGISTRY}"
 fi
 
 push() {
     local dist="$1"
-    DOCKER_CONTENT_TRUST=${ENABLE_DOCKER_CONTENT_TRUST} docker push "${BASENAME}:${dist}"
-    docker push "${GCR_BASENAME}:${dist}"
+    local image="${DOCKER_REGISTRY}/${BASENAME}:${dist}"
+    docker tag "${BASENAME}:${dist}" "${image}"
+    docker push "${image}"
+    
+    if [ -n "${COSIGN_PRIVATE_KEY:-}" ] && [ -n "${COSIGN_PASSWORD:-}" ]; then
+        cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${image}"
+    fi
 }
 
-docker tag "${BASENAME}:${DIST}-${PLATFORM}" "${GCR_BASENAME}:${DIST}-${PLATFORM}"
-
 push "$DIST-${PLATFORM}"
-

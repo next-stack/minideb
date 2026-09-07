@@ -8,7 +8,6 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 TARGET=${1:?Specify the target filename}
 DIST=${2:-stable}
 PLATFORM=${3:-$(dpkg --print-architecture)}
-SNAPSHOT_ID=${4:-}
 
 LOGFILE=${TARGET}.log
 
@@ -18,17 +17,21 @@ exec 2> >(tee -ia "$LOGFILE" >&2)
 
 DEBOOTSTRAP_DIR=$(mktemp -d)
 cp -a /usr/share/debootstrap/* "$DEBOOTSTRAP_DIR"
-cp -a /usr/share/keyrings/debian-archive-keyring.gpg "$DEBOOTSTRAP_DIR"
+cp -aL /usr/share/keyrings/debian-archive-keyring.gpg "$DEBOOTSTRAP_DIR"
 cp -a "${ROOT}/debootstrap/"* "${DEBOOTSTRAP_DIR}/scripts"
 
 KEYRING=$DEBOOTSTRAP_DIR/debian-archive-keyring.gpg
 
-if [ -f "${ROOT}/keys/${DIST}.gpg" ]; then
-    gpg --no-default-keyring --keyring "$KEYRING" --import "${ROOT}/keys/${DIST}.gpg"
-fi
-
 use_qemu_static() {
-    [[ "$PLATFORM" == "arm64" && ! ( "$(uname -m)" == *arm* || "$(uname -m)" == *aarch64* ) ]]
+    [[ "$PLATFORM" != "$(dpkg --print-architecture)" ]]
+}
+
+qemu_static_arch() {
+    case "$PLATFORM" in
+        amd64) echo x86_64 ;;
+        arm64) echo aarch64 ;;
+        *) echo "$PLATFORM" ;;
+    esac
 }
 
 export DEBIAN_FRONTEND=noninteractive
@@ -39,6 +42,7 @@ DIRS_TO_TRIM="/usr/share/man
 /usr/share/locale
 /var/log
 /usr/share/info
+/dev
 "
 
 debootstrap_arch_args=( )
@@ -64,10 +68,10 @@ rootfs_chroot() {
 if use_qemu_static ; then
     echo "Setting up qemu static in chroot"
     usr_bin_modification_time=$(stat -c %y "$rootfsDir"/usr/bin)
-    if [ -f "/usr/bin/qemu-aarch64-static" ]; then
+    if [ -f "/usr/bin/qemu-$(qemu_static_arch)-static" ]; then
         find /usr/bin/ -type f -name 'qemu-*-static' -exec cp {} "$rootfsDir"/usr/bin/. \;
     else
-        echo "Cannot find aarch64 qemu static. Aborting..." >&2
+        echo "Cannot find $(qemu_static_arch) qemu static. Aborting..." >&2
         exit 1
     fi
     touch -d "$usr_bin_modification_time" "$rootfsDir"/usr/bin
@@ -76,20 +80,11 @@ fi
 rootfs_chroot bash debootstrap/debootstrap --second-stage
 
 repo_url="http://deb.debian.org/debian"
-sec_repo_url="http://security.debian.org/"
-
-if [ -n "$SNAPSHOT_ID" ]; then
-	repo_url="http://snapshot.debian.org/archive/debian/${SNAPSHOT_ID}/"
-	sec_repo_url="http://snapshot.debian.org/archive/debian-security/${SNAPSHOT_ID}/"
-fi
+sec_repo_url="${repo_url}-security"
 
 echo -e "deb ${repo_url} $DIST main" > "$rootfsDir/etc/apt/sources.list"
-if [ "$DIST" == "bullseye" ]; then
-    echo "deb ${repo_url} $DIST-updates main" >> "$rootfsDir/etc/apt/sources.list"
-    echo "deb ${sec_repo_url} $DIST-security main" >> "$rootfsDir/etc/apt/sources.list"
-elif [ "$DIST" != "unstable" ]; then
-    echo "deb ${sec_repo_url} $DIST/updates main" >> "$rootfsDir/etc/apt/sources.list"
-fi
+echo "deb ${repo_url} $DIST-updates main" >> "$rootfsDir/etc/apt/sources.list"
+echo "deb ${sec_repo_url} $DIST-security main" >> "$rootfsDir/etc/apt/sources.list"
 
 rootfs_chroot apt-get update
 rootfs_chroot apt-get upgrade -y -o Dpkg::Options::="--force-confdef"

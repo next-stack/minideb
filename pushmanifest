@@ -4,18 +4,15 @@ set -e
 set -u
 set -o pipefail
 
-DISTS=${DISTS:-"stretch
-buster
-bullseye
+DISTS=${DISTS:-"bookworm
+trixie
 latest
 "}
 
-DISTS_WITH_SNAPSHOT=${DISTS_WITH_SNAPSHOT:-buster}
 BASENAME=bitnami/minideb
-GCR_BASENAME=gcr.io/bitnami-containers/minideb
+DOCKER_REGISTRY=${DOCKER_REGISTRY:-"docker.io"}
 PLATFORMS=${PLATFORMS:-amd64 arm64}
 DRY_RUN=${DRY_RUN:-}
-SNAPSHOT_ID=${SNAPSHOT_ID:-}
 read -r -a ARCHS <<<"$PLATFORMS"
 
 run_docker() {
@@ -42,14 +39,7 @@ list_includes() {
 }
 
 if [ -n "${DOCKER_PASSWORD:-}" ]; then
-    echo "$DOCKER_PASSWORD" | run_docker login -u "$DOCKER_USERNAME" --password-stdin
-fi
-
-if [ -n "${GCR_KEY:-}" ]; then
-    gcloud auth activate-service-account "$GCR_EMAIL" --key-file <(echo "$GCR_KEY")
-    gcloud auth print-access-token | run_docker login -u oauth2accesstoken --password-stdin gcr.io
-elif [ -n "${GCR_TOKEN:-}" ]; then
-    echo "${GCR_TOKEN:-}" | run_docker login -u oauth2accesstoken --password-stdin gcr.io
+    echo "$DOCKER_PASSWORD" | run_docker login -u "$DOCKER_USERNAME" --password-stdin "${DOCKER_REGISTRY}"
 fi
 
 push_manifest() {
@@ -63,24 +53,23 @@ push_manifest() {
     done
     run_docker manifest create "$image" "${arch_images[@]}"
     run_docker manifest push "$image"
+    
+    if [ -n "${COSIGN_PRIVATE_KEY:-}" ] && [ -n "${COSIGN_PASSWORD:-}" ]; then
+        if [[ -n "${DRY_RUN:-}" ]]; then
+            echo "DRY RUN cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${image}"
+        else
+            cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${image}"
+        fi
+    fi
 }
 
 tags=()
 
 for DIST in $DISTS; do
     tags+=("$DIST")
-    if list_includes "$DISTS_WITH_SNAPSHOT" "$DIST" ; then
-        tags+=("$DIST-snapshot-${SNAPSHOT_ID:-$(./snapshot_id)}")
-    fi
 done
 
-repositories=("$BASENAME")
-
-if [[ -n "${GCR_KEY:-}" || -n "${GCR_TOKEN:-}" ]]; then
-    repositories+=("$GCR_BASENAME")
-else
-    echo "Skipping repository gcr.io (empty password)"
-fi
+repositories=("${DOCKER_REGISTRY}/${BASENAME}")
 
 for tag in "${tags[@]}"; do
     for repo in "${repositories[@]}"; do
